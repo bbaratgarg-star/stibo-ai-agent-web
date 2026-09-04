@@ -161,6 +161,9 @@ app.post('/api/chat', async (req, res) => {
             query($id: String!, $scope: String!) {
                 productByID(id: $id, scope: $scope) {
                     id name sku price longDescription brand
+                    leadTimeData: values(attributes: ["PMDM.AT.LeadTime"]) { 
+                        values { value } 
+                    }
                 }
             }
         `;
@@ -185,17 +188,28 @@ app.post('/api/chat', async (req, res) => {
                 return null;
             }).filter(Boolean);
 
-            // Annotate each product with category + supplier from enrichment index
+            // Annotate each product with category, supplier, and flatten lead time
             const annotatedProducts = validProducts.map(p => {
                 const extra = enrichmentIndex[p.id];
+                
+                // Extract lead time if available from Stibo
+                let leadTime = "Unknown";
+                if (p.leadTimeData && p.leadTimeData.length > 0 && p.leadTimeData[0].values.length > 0) {
+                    leadTime = p.leadTimeData[0].values[0].value + " days";
+                }
+                
+                // Clean up the object to send to Gemini (remove the raw nested leadTimeData)
+                const { leadTimeData, ...cleanProduct } = p;
+
                 if (extra) {
                     return {
-                        ...p,
+                        ...cleanProduct,
+                        leadTime,
                         categoryPath: extra.categories.join(' > ') || 'Unknown',
                         supplier: p.supplier || extra.supplier || 'Unknown'
                     };
                 }
-                return p;
+                return { ...cleanProduct, leadTime };
             });
 
             stiboContext = annotatedProducts.length > 0
@@ -220,6 +234,10 @@ Customer's Question:
 "${message}"
 
 Provide a friendly, helpful, and concise response. Do not mention "Stibo" or "DaaS" to the customer. Organize recommendations nicely with bullet points or numbers.
+
+CRITICAL RULES: 
+1. Do not invent or hallucinate shipping times, delivery options, or stock availability. 
+2. If the customer asks about delivery or lead times, you MUST inform them of the exact lead time provided in the product's "leadTime" field. If it says 7 days, tell them 7 days. Do not offer express or expedited options that are not in the data.
 `;
 
         let result;
