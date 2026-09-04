@@ -12,7 +12,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Set up Gemini AI (Requires GEMINI_API_KEY environment variable)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY");
-const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // Stibo MCP Connection Details
 const MCP_SERVER_URL = "https://daas-naalliances-sandbox.daas.stibosystems.com/runtime/webhooks/mcp";
@@ -229,9 +229,29 @@ Provide a friendly, helpful, and concise response. Do not mention "Stibo" or "Da
                 result = await model.generateContent(aiPrompt);
                 break;
             } catch (aiError) {
-                if (retries === 0 || (aiError.status !== 503 && aiError.status !== 429)) throw aiError;
-                console.log(`Gemini API Busy (Status ${aiError.status}). Retrying...`);
-                await new Promise(r => setTimeout(r, 2000));
+                if (retries === 0 || (aiError.status !== 503 && aiError.status !== 429)) {
+                    console.error("Gemini API Error:", aiError);
+                    send('error', { text: "AI is currently busy. Please try again in a few moments." });
+                    res.end();
+                    return;
+                }
+                
+                let delayMs = 2000;
+                // Parse dynamic delay from 429 quota error if provided (e.g. "28s")
+                if (aiError.status === 429 && aiError.errorDetails) {
+                    const retryInfo = aiError.errorDetails.find(d => d['@type'] === 'type.googleapis.com/google.rpc.RetryInfo');
+                    if (retryInfo && retryInfo.retryDelay) {
+                        const seconds = parseInt(retryInfo.retryDelay.replace('s', ''));
+                        if (!isNaN(seconds)) {
+                            delayMs = (seconds * 1000) + 1000; // Add 1s buffer
+                            console.log(`Rate limited. Waiting ${seconds} seconds before retrying...`);
+                            send('step', { step: 3, text: `⚠️ API Rate Limit - waiting ${seconds}s to retry...` });
+                        }
+                    }
+                }
+                
+                console.log(`Gemini API Busy (Status ${aiError.status}). Retrying in ${delayMs}ms...`);
+                await new Promise(r => setTimeout(r, delayMs));
                 retries--;
             }
         }
