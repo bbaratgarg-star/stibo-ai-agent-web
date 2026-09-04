@@ -1,0 +1,11 @@
+node_modules
+.env
+*.log
+peek_excel.js
+echo.js
+test_mcp.js
+test_stibo.js
+list_models.js
+
+# Explicitly include data folder for deployment
+!data/
