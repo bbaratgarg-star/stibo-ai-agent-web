@@ -73,11 +73,8 @@ async function queryStibo(graphqlQuery, variables = {}) {
         return null;
     } catch (err) {
         console.error("Error communicating with Stibo Webhook:", err);
-        return null;
     }
 }
-
-
 
 app.post('/api/chat', async (req, res) => {
     const { message } = req.body;
@@ -95,64 +92,64 @@ app.post('/api/chat', async (req, res) => {
         // ── STEP 1: Search product catalog ────────────────────────────────
         send('step', { step: 1, text: '🔍 Searching product catalog...' });
 
-        const idPattern = /\bGR-\d+\b/gi;
-        const mentionedIds = message.match(idPattern);
-        let topMatches = [];
+        let directHit = null;
+        const idMatch = message.match(/GR-\d{6}/i);
+        if (idMatch) {
+            directHit = idMatch[0].toUpperCase();
+        }
 
-        if (mentionedIds && mentionedIds.length > 0) {
-            topMatches = [...new Set(mentionedIds)].slice(0, 5).map(id => ({ id: id.toUpperCase() }));
-        } else {
-            // Multi-field relevance search: name, brand, SKU, description, category, supplier
-            const queryLower = message.toLowerCase();
-            const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+        const queryLower = message.toLowerCase();
+        const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
 
-            let scoredProducts = productsCatalog.map(p => {
-                let score = 0;
-                const name  = (p.name  || "").toLowerCase();
-                const brand = (p.brand || "").toLowerCase();
-                const sku   = (p.sku   || "").toLowerCase();
-                const desc  = (p.longDescription || "").toLowerCase();
+        let scoredProducts = productsCatalog.map(p => {
+            let score = 0;
+            const name = (p.name || "").toLowerCase();
+            const brand = (p.brand || "").toLowerCase();
+            const sku = (p.sku || "").toLowerCase();
+            const desc = (p.longDescription || "").toLowerCase();
 
-                // --- SKU: exact match is a direct hit ---
-                if (sku   && queryLower.includes(sku))   score += 50;
-                // --- Brand: exact brand name in query ---
-                if (brand && queryLower.includes(brand)) score += 15;
-                // --- Name: exact phrase match ---
-                if (name  && queryLower.includes(name))  score += 20;
-                // --- Name: individual keyword matches ---
-                const nameWords = name.split(/\s+/).filter(w => w.length > 3);
-                for (const w of nameWords) { if (queryLower.includes(w)) score += 2; }
-                // --- Description: keyword presence ---
-                for (const qw of queryWords) { if (desc.includes(qw)) score += 0.5; }
+            // --- Direct Hit Boost ---
+            if (directHit && p.id === directHit) score += 1000;
 
-                // --- Category & Supplier from enrichment index ---
-                const enriched = enrichmentIndex[p.id];
-                if (enriched) {
-                    // Supplier: exact name in query
-                    const supplier = (enriched.supplier || "").toLowerCase();
-                    if (supplier && queryLower.includes(supplier)) score += 20;
+            // --- SKU: exact match is a direct hit ---
+            if (sku && queryLower.includes(sku)) score += 50;
+            // --- Brand: exact brand name in query ---
+            if (brand && queryLower.includes(brand)) score += 15;
+            // --- Name: exact phrase match ---
+            if (name && queryLower.includes(name)) score += 20;
+            // --- Name: individual keyword matches ---
+            const nameWords = name.split(/\s+/).filter(w => w.length > 3);
+            for (const w of nameWords) { if (queryLower.includes(w)) score += 2; }
+            // --- Description: keyword presence ---
+            for (const qw of queryWords) { if (desc.includes(qw)) score += 0.5; }
 
-                    // Categories: match any level
-                    for (const cat of (enriched.categories || [])) {
-                        const catLower = cat.toLowerCase();
-                        // Exact category phrase in query
-                        if (queryLower.includes(catLower)) score += 10;
-                        // Individual category words
-                        const catWords = catLower.split(/\s+/).filter(w => w.length > 3);
-                        for (const cw of catWords) {
-                            if (queryLower.includes(cw)) score += 2;
-                        }
+            // --- Category & Supplier from enrichment index ---
+            const enriched = enrichmentIndex[p.id];
+            if (enriched) {
+                // Supplier: exact name in query
+                const supplier = (enriched.supplier || "").toLowerCase();
+                if (supplier && queryLower.includes(supplier)) score += 20;
+
+                // Categories: match any level
+                for (const cat of (enriched.categories || [])) {
+                    const catLower = cat.toLowerCase();
+                    // Exact category phrase in query
+                    if (queryLower.includes(catLower)) score += 10;
+                    // Individual category words
+                    const catWords = catLower.split(/\s+/).filter(w => w.length > 3);
+                    for (const cw of catWords) {
+                        if (queryLower.includes(cw)) score += 2;
                     }
                 }
+            }
 
-                return { id: p.id, score };
-            });
-            
-            topMatches = scoredProducts
-                .filter(p => p.score > 0)
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 5);
-        }
+            return { id: p.id, score };
+        });
+
+        let topMatches = scoredProducts
+            .filter(p => p.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 5);
 
         // ── STEP 2: Hydrate from Stibo ─────────────────────────────────────
         send('step', { step: 2, text: '⚡ Fetching live data from Stibo...' });
@@ -253,7 +250,7 @@ CRITICAL RULES:
                     res.end();
                     return;
                 }
-                
+
                 let delayMs = 2000;
                 // Parse dynamic delay from 429 quota error if provided
                 if (aiError.status === 429 && aiError.errorDetails) {
@@ -263,13 +260,13 @@ CRITICAL RULES:
                         if (!isNaN(seconds)) {
                             delayMs = (seconds * 1000) + 1000; // Add 1s buffer
                             console.log(`Rate limited. Waiting ${seconds} seconds before retrying...`);
-                            send('step', { step: 3, text: `⚠️ API Rate Limit - waiting ${seconds}s to retry...` });
+                            send('step', { step: 3, text: "⚠️ API Rate Limit - waiting " + seconds + "s to retry..." });
                         }
                     }
                 } else {
                     console.log(`Gemini API Busy (Status ${aiError.status}). Retrying in ${delayMs}ms...`);
                 }
-                
+
                 await new Promise(r => setTimeout(r, delayMs));
                 retries--;
             }
